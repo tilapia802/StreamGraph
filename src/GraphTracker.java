@@ -51,53 +51,28 @@ public class GraphTracker {
       graph_table[i] = "null"; 
     }
     System.out.println("after initilization");
-    String [] line_split;
     String des = "";
     int src = 0;
     int count = 0;
-    int src_end = 0;
+    int src_end = 0;  
     while((line = in.readLine()) != null){
       if (count % 10000 == 0)
           System.out.println(count);
-      ///line_split = line.split(" ");
-      ///src = Integer.parseInt(line_split[0]);
       src_end = String.valueOf(count).length();
       src = Integer.parseInt(line.substring(0,src_end)); 
-      //For twitter
       
+      //For twitter
       if(line.length()==src_end){
-        graph_table[src] = des;
+        graph_table[src] = "";
         count = count + 1;
         continue;
       }
       
-      graph_table[src] = line.substring(src_end+1,line.length());
-      //int weight = 1;
-      //graph_table[src] = des;
+      des = line.substring(src_end+1,line.length());
+      graph_table[src] = des;
       count = count + 1;
       
     }
-
-    /* Initial graph table */
-    /*int[][] graph_table = new int[vertex_num+1][edge_num+1 ];
-    for (int i=0;i<vertex_num+1;i++){
-      for (int j=0;j<edge_num+1;j++){
-        if(i == j)
-          graph_table[i][j] = 0;
-        else
-          graph_table[i][j] = 200000;
-      }
-    }*/
-    /* Put initial graph (topology) in graph table (vertex starts from ID 1) */
-    /*while((line = in.readLine()) != null)
-    {
-      String [] line_split = line.split(" ");
-      int src = Integer.parseInt(line_split[0]);
-      int des = Integer.parseInt(line_split[1]);
-      int weight = Integer.parseInt(line_split[2]);
-      graph_table[src][des] = weight;
-      graph_table[des][src] = weight;
-    }*/
     in.close();
     return graph_table;
   }
@@ -108,7 +83,6 @@ class GraphTrackerTask implements Runnable {
   pgps.Logger logger;
   pgps.GraphTrackerMessageQueue graphtracker_message_queue;
   String[] graph_table;
-  //private static int[][] worker_data;
   private GraphTracker graphtracker;
   
   ConnectionFactory[] factory;  
@@ -157,9 +131,6 @@ class GraphTrackerTask implements Runnable {
           if(!message_subgraph.equals("")){
             sendtoWorker(message_subgraph,workerID,logger,readconf, channel_worker); //Send subgraph to worker 
           }
-          /*if(threadId == 22){
-              try{logger.log("Send message to worker");}catch(Exception e){}
-          }*///profile
         }
         catch(Exception e){}
       }
@@ -170,47 +141,13 @@ class GraphTrackerTask implements Runnable {
     String subgraph_vertex_list="";
     String[] graph_table_split;
    
-    if(message.split(" ").length == 4){ //first message
-      subgraph_vertex_list = message.split(" ")[0];
-      synchronized(graphtracker.worker_data){
-        graphtracker.worker_data[workerID][Integer.valueOf(subgraph_vertex_list)] = 1; //Record that this worker will has this vertex data 
-      }
+    String [] batch_message_split = message.split(";");
+    for(int i=0;i<batch_message_split.length-1;i++){ 
+      message = batch_message_split[i];
+      subgraph_vertex_list = subgraph_vertex_list + message.split(" ")[0] + ",";
     }
-    else{
-      String [] batch_message_split = message.split(";");
-      for(int i=0;i<batch_message_split.length-1;i++){ 
-        message = batch_message_split[i];
-        String des_str = message.split(" ")[1];    //des,des,des
-        /*int src = Integer.valueOf(message.split(" ")[0]);
-        synchronized(graphtracker.worker_data){
-          if (graphtracker.worker_data[workerID][src] == 0){
-            subgraph_vertex_list = subgraph_vertex_list + message.split(" ")[0] + ",";
-            graphtracker.worker_data[workerID][src] = 1;
-          }
-        }*/
-        /*String[] des_str_split = des_str.split(",");
-        for (int j=0;j<des_str_split.length;j++){
-          int des = Integer.valueOf(des_str_split[j]);
-          synchronized(graphtracker.worker_data){
-            if (graphtracker.worker_data[workerID][des] == 0){  //Worker don't have that vertex data
-              subgraph_vertex_list = subgraph_vertex_list + des_str_split[j] + ",";
-              graphtracker.worker_data[workerID][des] = 1;
-            }
-          }
-        }*/
-        //int vertex = Integer.valueOf(des_str.substring(0,des_str.length()-1));
-        //graph_table_split = graph_table[vertex].split(" "); //outgoing neighbors有誰
-        subgraph_vertex_list = subgraph_vertex_list + des_str;
-        /*if (!graph_table_split[0].equals("")){
-          for(int j=0;j<graph_table_split.length;j++){
-            subgraph_vertex_list = subgraph_vertex_list + graph_table_split[j] + ",";
-            if (j==2)
-              break;
-          }
-        }*/
-      }
-    }
-    return subgraph_vertex_list; // src,des,des,des,des
+
+    return subgraph_vertex_list; // des,des,des,des
   }
 
   private String getSubgraph(String subgraph_vertex_list, String[] graph_table, int vertex_num) {
@@ -227,30 +164,34 @@ class GraphTrackerTask implements Runnable {
     //try{
       //System.out.println("meta data size is " + meta_data.getBytes("UTF-8").length);
     //}catch (Exception e){}
+    String vertex_subgraph;
     for (int i=0;i<subgraph_vertex_list_split.length;i++){
-      String[] graph_table_split = graph_table[Integer.valueOf(subgraph_vertex_list_split[i])].split(" "); //outgoing neighbors有誰
-      String vertex_subgraph = ""; //String of each vertex subgraph in vertex list
-      for (int j=0;j<graph_table_split.length;j++){
-        vertex_subgraph = vertex_subgraph + graph_table_split[j] + ":1,";
-      } 
-      vertex_subgraph = subgraph_vertex_list_split[i] + "," + vertex_subgraph; //src,vertex_subgraph     
+      //String[] graph_table_split = graph_table[Integer.valueOf(subgraph_vertex_list_split[i])].split(" "); //outgoing neighbors有誰
+      vertex_subgraph = ""; //String of each vertex subgraph in vertex list
+      //for (int j=0;j<graph_table_split.length;j++){
+        //vertex_subgraph = vertex_subgraph + graph_table_split[j] + ":1,";
+      //} 
+      //vertex_subgraph = subgraph_vertex_list_split[i] + "," + vertex_subgraph; //src,vertex_subgraph
+      vertex_subgraph = vertex_subgraph + subgraph_vertex_list_split[i] + " ";  
+      vertex_subgraph = vertex_subgraph + graph_table[Integer.valueOf(subgraph_vertex_list_split[i])] + ","; //out1 weight1 out2 weight2,
+      //System.out.println("subgraph of vertex " + subgraph_vertex_list_split[i] + " is " + vertex_subgraph);
       //Add meta data
       //vertex_subgraph = vertex_subgraph + meta_data + ",";
 
-      message_subgraph = message_subgraph + vertex_subgraph + " ";
+      message_subgraph = message_subgraph + vertex_subgraph;
     }
     return message_subgraph;
   }
   private void sendtoWorker(String message, int workerID, pgps.Logger logger, pgps.ReadConf readconf, Channel[] channel_worker) throws Exception {
     String key = "worker" + String.valueOf(workerID); //routing key
     String message_worker = message;
+    //logger.log("send " + message_worker);
     channel_worker[workerID].basicPublish(EXCHANGE_NAME, key, null, message_worker.getBytes("UTF-8"));
   }
 
 };
 class GraphTrackerReceiveMessage implements Runnable {
   private static final String TASK_QUEUE_NAME = "graphtracker_queue";
-  private static final String EXCHANGE_NAME = "Tracker_directTOworker";
   ConnectionFactory factory;
   Connection connection;
   Channel channel;
@@ -277,7 +218,7 @@ class GraphTrackerReceiveMessage implements Runnable {
       @Override
       public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
         String message = new String(body, "UTF-8");
-        //logger.log("[GraphTracker] Received");
+        //logger.log("[GraphTracker] Received" + message);
         try{
             graphtracker_message_queue.pushToQueue(message);
         }

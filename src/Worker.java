@@ -7,6 +7,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.locks.*;
 import java.io.*;
 import java.util.*;
 import java.text.*;
@@ -14,7 +15,7 @@ import java.text.*;
 public class Worker {
 
   public static Map<String, String> graph_topology_map;
-  ReentrantLock lock = new ReentrantLock();
+  StampedLock lock = new StampedLock();
   public static void main(String[] argv) throws Exception {
     pgps.ReadConf readconf = new pgps.ReadConf();
     pgps.Logger logger = new pgps.Logger(readconf.getLogDirectory() + "Worker" + String.valueOf(argv[0]) + "_log");
@@ -29,9 +30,9 @@ public class Worker {
 
     /* Initial array for graph vertex status */
     JedisPool pool = new JedisPool(readconf.getMasterHostname());
-    Jedis jedis = pool.getResource();
-    jedis.set("1","0");
-    jedis.close();
+    //Jedis jedis = pool.getResource();
+    //jedis.set("1","0");
+    //jedis.close();
     
     /* The hashmap that stores graph topology */
     graph_topology_map = new HashMap<String, String>();
@@ -69,6 +70,8 @@ class WorkerTask implements Runnable {
   long threadId;
   int how_many_batch = 0;
   int how_many_local_task = 0;
+  long wait_time = 0;
+  long message_timet = 0;
   public WorkerTask(pgps.ReadConf readconf, pgps.Logger logger, pgps.WorkerMessageQueue worker_message_queue, pgps.WorkerMessageQueue worker_message_queue_receive, String workerID, JedisPool pool)throws Exception{
     worker = new Worker();
     this.workerID = workerID;
@@ -88,6 +91,7 @@ class WorkerTask implements Runnable {
       String message = worker_message_queue_receive.popFromQueue(); 
       if (!message.equals("NULL")){
         try{
+          //System.out.println("receive task " + message);
           doWork(message,jedis,worker.graph_topology_map,workerID,logger,readconf,worker_message_queue_receive,threadId);   
           //System.out.println("local task is " + how_many_local_task);
           //System.out.println("How many batch is " + how_many_batch);
@@ -100,200 +104,74 @@ class WorkerTask implements Runnable {
   private void doWork(String message, Jedis jedis, Map<String, String> graph_topology_map, String workerID, pgps.Logger logger, pgps.ReadConf readconf, pgps.WorkerMessageQueue worker_message_queue_receive, long threadId)throws Exception {
     /* Parse message from scheduler */
     String vertexID = "";
-    String senderID = "";
-    String message_time,algname;
-    String [] message_split = message.split(" ");
+    String new_distance = "";
+    String [] message_split;
     String [] message_batch_split = message.split(";");
    
     int i;
-    //StringBuilder tasklist = new StringBuilder();
-    String [] tasklist = new String [2];
-    tasklist[0] = "";
-    tasklist[1] = "";
-    String [] graph_topology_value_split;
-    String graph_topology_value;
-    String message_to_scheduler="";
-
-    /* If vertexID = 1, which is source vertex of shortest path */
-    if (message_split.length == 3){ //src vertex (first message)
+    String tasklist;
+    //String [] tasklist = new String [2];
+    //tasklist[0] = "";
+    //tasklist[1] = "";
+    String new_message = "";
+    boolean local_task = false;
+    for(int j=0;j<message_batch_split.length;j++){
+      //System.out.println("message batch split is " + message_batch_split[j]);
       how_many_batch = how_many_batch + 1;
+      //System.out.println("How many batch is " + how_many_batch);
+      message_split = message_batch_split[j].split(" ");
       vertexID = message_split[0];
-      message_time = message_split[1];
-      algname = message_split[2].substring(0,message_split[2].length()-1);
+      //logger.log("vertexID is " + vertexID);
+      new_distance = message_split[1];       
+      //logger.log("new_distance is " + new_distance);
+      //logger.log("old_distance is " + jedis.get(vertexID));
+      int weight;
+    
+      /* See if new distance is shorter than the distance now */
+      if (Integer.valueOf(new_distance) < Integer.valueOf(jedis.get(vertexID))){
+        logger.log("update");
+        jedis.set(vertexID,String.valueOf(new_distance));
 
-      /* Wait until it has subgraph data */ 
-      while (!worker.graph_topology_map.containsKey(vertexID)){
-        try{
-          Thread.sleep(8);
-        }catch (Exception e){}
-      }
-      //logger.log("[Worker] Worker " + workerID + " finished waiting for subraph value of key 1");
-      tasklist = getOutgoingNeighbors(vertexID,graph_topology_map,logger);
-      //logger.log("outgoing neighbors of vertexID" + vertexID + "is" + tasklist);
-      
-      /* Send tasklist to scheduler */
-      if (tasklist[0].length() > 0){ 
-        try{
-          message_to_scheduler = vertexID + " " + tasklist[0].toString() + " " + message_time + " " + algname; //src des,des,des,des,des time shortestpath
-          worker_message_queue.pushToQueue(message_to_scheduler);
-          //sendTaskToScheduler(message_to_scheduler,vertexID,tasklist.toString(),message_time,algname,workerID,logger,readconf);
-        }
-        catch(Exception e){}
-      }
-    }
-    else{ //other vertex
-      for(int j=0;j<message_batch_split.length;j++){
-        how_many_batch = how_many_batch + 1;
-        //System.out.println("How many batch is " + how_many_batch);
-        message_split = message_batch_split[j].split(" ");
-        senderID = message_split[0];
-        vertexID = message_split[1]; //des,des,des,
-        message_time = message_split[2];
-        algname = message_split[3];
-        int new_distance;
-        int weight;
-        /*if(threadId == 22){
-          try{logger.log("Start waiting");}catch (Exception e){}
-        }*///profile
-        /*while (!worker.graph_topology_map.containsKey(String.valueOf(senderID))){
-          try{
-            Thread.sleep(8);
-          }catch (Exception e){}
-        }*/
-        /*if(threadId == 22){
-          try{logger.log("Finish waiting");}catch (Exception e){}
-        }*///profile
-        //logger.log("[Worker] Worker " + workerID + " finished waiting for subraph value of key " + senderID);
-        //System.out.println("senderID=" + senderID + " vertexID=" + vertexID);
-
-        String[] vertexID_split = vertexID.split(",");
-        int length = vertexID_split.length;
-        /*if(threadId == 22){
-          try{logger.log("Start computing");}catch (Exception e){}
-        }*///profile
-        for(i=0;i<length;i++){
-          vertexID = vertexID_split[i];
-          //weight = getEdgeWeight(senderID,vertexID,graph_topology_map);
-          new_distance = Integer.valueOf(jedis.get(senderID)) + 1;//weight;
-          
-          /* See if new distance is shorter than the distance now */
-          if (new_distance < Integer.valueOf(jedis.get(vertexID))){
-            //System.out.println("[Worker] " + vertexID + "update value from " + jedis.get(vertexID) + " to " + new_distance);
-            jedis.set(vertexID,String.valueOf(new_distance));
-            
-            /*if(threadId == 22){
-              try{logger.log("In Start waiting");}catch (Exception e){}
-            }*///pofile
-            /* Find neighbors of this vertex */
-            while (!worker.graph_topology_map.containsKey(vertexID)){
-              try{
-                Thread.sleep(8);
-              }catch (Exception e){}
-            }
-            /*if(threadId == 22){
-              try{logger.log("In Finish waiting");}catch (Exception e){}
-            }*///profile
-            //logger.log("[Worker] Worker " + workerID + " finished waiting for subraph value of key " + vertexID);
-            tasklist = getOutgoingNeighbors(vertexID,graph_topology_map,logger);
-
-            /* Check if it has neighbors */
-            if (tasklist[0].length() > 0){ 
-              try{
-                message_to_scheduler = vertexID + " " + tasklist[0].toString() + " " + message_time + " " + algname; //src des,des,des,des,des time shortestpath
-                worker_message_queue.pushToQueue(message_to_scheduler);
-                //sendTaskToScheduler(message_to_scheduler,vertexID,tasklist.toString(),message_time,algname,workerID,logger,readconf);
-              }
-              catch(Exception e){       
-              }
-            }
-            String localtask = "";
-            if (tasklist[1].length()>0){
-              //System.out.println("self task vertex is " + tasklist[1]);
-              String [] localtask_vertex_split = tasklist[1].split(","); 
-              how_many_local_task = how_many_local_task + localtask_vertex_split.length;
-              for (int k=0;k<localtask_vertex_split.length;k++){
-                localtask = localtask + vertexID + " " + localtask_vertex_split[k] + " " + message_time + " " + algname + ";";
-              }
-              //System.out.println("local task is " + localtask);
-              worker_message_queue_receive.pushToQueue(localtask);
-            }
+        /* Find neighbors of this vertex */
+        while(true){
+          //System.out.println("hi");
+          synchronized(worker.graph_topology_map){
+            if(worker.graph_topology_map.containsKey(vertexID))
+              break;
           }
+          try{
+            Thread.sleep(3);
+          }catch (Exception e){}
+          //System.out.println("waiting for " + vertexID);
         }
-      }
-    }
-  }  
 
-  private static String[] getOutgoingNeighbors(String vertexID, Map<String, String> graph_topology_map, pgps.Logger logger) throws Exception{
-    String graph_topology_value; 
-    String [] graph_topology_value_split;
-    //StringBuilder tasklist = new StringBuilder();
-    String [] tasklist = new String [2];
-    tasklist[0] = "";
-    tasklist[1] = "";
-    int i;
-    synchronized(worker.graph_topology_map){
-      graph_topology_value = worker.graph_topology_map.get(vertexID);
-    }
-    if (graph_topology_value.equals(":1,")){
-      //tasklist.append("");
-      return tasklist;
-    }
-    /* Split the graph topology of vertexID and find outgoing neighbors and construct tasklist to be sent */
-    graph_topology_value_split = graph_topology_value.split(",");
-    for(i=0;i<graph_topology_value_split.length;i++){
-      String outgoing_vertex = graph_topology_value_split[i].split(":")[0];
-      if (vertexID.equals(outgoing_vertex)) 
-        continue;
-      synchronized(worker.graph_topology_map){
-        if (worker.graph_topology_map.containsKey(outgoing_vertex)){
-          tasklist[1] = tasklist[1] + outgoing_vertex;
-          tasklist[1] = tasklist[1] + ",";
+        synchronized(worker.graph_topology_map){
+          tasklist = worker.graph_topology_map.get(vertexID);
+        }
+        if(tasklist.equals("")){ //has no outgoing neighbors
           continue;
         }
-      }
-      //tasklist.append(graph_topology_value_split[i].split(":")[0]);
-      //tasklist.append(",");
-      tasklist[0] = tasklist[0] + outgoing_vertex;
-      tasklist[0] = tasklist[0] + ",";
+        String [] tasklist_split = tasklist.split(" ");
+        for (i=0;i<tasklist_split.length;i+=2){
+          local_task = false;
+          synchronized(worker.graph_topology_map){
+            if (worker.graph_topology_map.containsKey(tasklist_split[i])){
+                local_task = true;
+            }
+          }
+          new_message = tasklist_split[i] + " " + String.valueOf(Integer.valueOf(new_distance) + Integer.valueOf(tasklist_split[i+1]));
+          if(local_task == true){
+            //System.out.println("push to local queue " + new_message);
+            worker_message_queue_receive.pushToQueue(new_message + ";");
+          }
+          else{
+            //System.out.println("push to remote queue " + new_message);
+            worker_message_queue.pushToQueue(new_message);
+          }
+        }
+      }   
     }
-    return tasklist; //des,des,des,des
-  }
-
-  private static int getEdgeWeight(String srcID, String desID, Map<String, String> graph_topology_map){
-    String graph_topology_value; 
-    String [] graph_topology_value_split;
-    StringBuilder tasklist = new StringBuilder();
-    int i;
-    int weight = 0;
-    synchronized(worker.graph_topology_map){
-      graph_topology_value = worker.graph_topology_map.get(String.valueOf(srcID));
-    }
-    /* Split the graph topology of srcID and find weight of desID */
-    graph_topology_value_split = graph_topology_value.split(",");
-    for(i=0;i<graph_topology_value_split.length;i++){
-      if (graph_topology_value_split[i].split(":")[0].equals(desID)){
-        weight = Integer.valueOf(graph_topology_value_split[i].split(":")[1]);
-        break; 
-      }
-    }
-    return weight;
-  }
-
-  private void sendTaskToScheduler(String message, String senderID, String tasklist, String message_time, String algname, String workerID, pgps.Logger logger, pgps.ReadConf readconf ) throws Exception{
-    /* Connection setting */
-    ConnectionFactory factory = new ConnectionFactory();
-    factory.setHost(readconf.getMasterHostname());
-    factory.setAutomaticRecoveryEnabled(true);
-    Connection connection = factory.newConnection();
-    Channel channel = connection.createChannel();
-
-    /* Queue declare */
-    channel.queueDeclare("schedule_queue", true, false, false, null);
-    channel.basicPublish("", "schedule_queue", MessageProperties.PERSISTENT_TEXT_PLAIN, message.getBytes("UTF-8"));
-    channel.close();
-    connection.close();
-
-  }
+  }  
 
 };
 class WorkerReceiveSubgraphTask implements Runnable {
@@ -339,35 +217,42 @@ class WorkerReceiveSubgraphTask implements Runnable {
           public void handleDelivery(String consumerTag, Envelope envelope,
                                      AMQP.BasicProperties properties, byte[] body) throws IOException {
             String message = new String(body, "UTF-8");
-            message_count = message_count + message.getBytes().length;
-            //System.out.println("Message size is " + message_count);
+            //message_count = message_count + message.getBytes().length;
+            //System.out.println("Message is " + message);
             //logger.log("[Worker] Worker " + workerID + " received subgraph");
-            String [] message_split = message.split(" ");
-            int len = message_split.length;
-            /* Subgraph format: src,out1:weight,out2:weight, src2,out1:weight,out:weight
-               Ex : 12,4:40,9:48,12:0,13:18,17:7, 4,2:38,4:0,9:37,10:32,12:40,           */
+            String [] message_split = message.split(",");
+            int len = message_split.length; //How many task batch
+            //System.out.println("len is " + len);
+            /* Subgraph format: src out1 weight out2 weight, src2 out1 weight out weight
+               Ex : 12 4 40 9 48 12 0 13 18 17 7, 4 2 38 4 0 9 37 10 32 12 40            */
             String map_key; //12
             String map_value; //4:40,9:48,12:0,13:18,17:7
             String [] message_split_split;
             String meta_data; //Add meta data for experiment
+            int key_len;
             for (int i=0;i<len;i++){
-              message_split_split = message_split[i].split(",");
-              map_key = message_split_split[0]; 
+              key_len = 0;
+              if(message_split[i].equals(""))
+                break;
+              for(int j=0;j<10;j++){
+                if(message_split[i].charAt(j) == ' ')
+                  break;
+                else
+                  key_len = key_len + 1;
+              } 
+              //message_split_split = message_split[i].split(" ");
+              //map_key = message_split_split[0]; 
+              map_key = message_split[i].substring(0,key_len);
               //meta_data = message_split_split[message_split_split.length-1];
               //map_value要扣掉meta data的資料
-              //System.out.println("string is " + message_split[i]);
-              //System.out.println("total length = " + message_split[i].length());
-              //System.out.println("start index = " + map_key.length()+1);
-              //System.out.println("end index = " + String.valueOf(message_split[i].length()-(meta_data.length()+1)));
               //Add meta data
               //map_value = message_split[i].substring(map_key.length()+1,message_split[i].length()-(meta_data.length()+1));
               //origin: 
-              map_value = message_split[i].substring(map_key.length()+1);
-              //System.out.println("map value is " + map_value);
+              map_value = message_split[i].substring(key_len+1);
+              //change
               synchronized(worker.graph_topology_map){
                   worker.graph_topology_map.put(map_key,map_value);
               }
-              //System.out.println("Get" + graph_topology_map.get(map_key));
             }
           }
         };
@@ -412,7 +297,7 @@ class WorkerSendToScheduler implements Runnable{
     long startTime = 0;
     long endTime = 0;
     long currentDelayTime = 0;
-    int first = 1;
+    int first = 0;
     while(true){
       String message = worker_message_queue.popFromQueue();
       endTime = System.currentTimeMillis();  
@@ -426,7 +311,7 @@ class WorkerSendToScheduler implements Runnable{
         if (batch_counter >= batch_size || first == 1){
           try{
             channel.basicPublish("", "schedule_queue", MessageProperties.PERSISTENT_TEXT_PLAIN, message_batch.getBytes("UTF-8"));
-            //SendTest(message_batch);
+            //logger.log("batch " + message_batch);
             batch_counter = 0;
             message_batch = "";
             currentDelayTime = 0;
@@ -439,7 +324,7 @@ class WorkerSendToScheduler implements Runnable{
       else if (batch_counter!=0 && currentDelayTime >= delay_time){
         try{
             channel.basicPublish("", "schedule_queue", MessageProperties.PERSISTENT_TEXT_PLAIN, message_batch.getBytes("UTF-8"));
-            //SendTest(message_batch);
+            //logger.log("delay: " + message_batch);
             batch_counter = 0;
             message_batch = "";
             currentDelayTime = 0;
@@ -448,23 +333,6 @@ class WorkerSendToScheduler implements Runnable{
           catch(Exception e){}
       }
     }
-    //channel.close();
-    //connection.close();
-  }
-  private void SendTest(String message)throws Exception{
-    /* Connection setting */
-    ConnectionFactory factory = new ConnectionFactory();
-    factory.setHost(readconf.getMasterHostname());
-    factory.setAutomaticRecoveryEnabled(true);
-    Connection connection = factory.newConnection();
-    Channel channel = connection.createChannel();
-
-    /* Queue declare */
-    channel.queueDeclare("schedule_queue", true, false, false, null);
-    channel.basicPublish("", "schedule_queue", MessageProperties.PERSISTENT_TEXT_PLAIN, message.getBytes("UTF-8"));
-    channel.close();
-    connection.close();    
-        
   }
 };
 class WorkerReceiveMessage implements Runnable {
@@ -506,7 +374,7 @@ class WorkerReceiveMessage implements Runnable {
       public void handleDelivery(String consumerTag, Envelope envelope,
                                  AMQP.BasicProperties properties, byte[] body) throws IOException {
         String message = new String(body, "UTF-8");
-        //logger.log("[Worker] Worker " + workerID + " received task");
+        //logger.log("[Worker] Worker " + workerID + " received task " + message);
         try{ 
           worker_message_queue_receive.pushToQueue(message);
         }

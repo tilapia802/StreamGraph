@@ -50,7 +50,7 @@ class ReceiveMessage implements Runnable {
   //private static MyTask scheduler_task;
   private static Scheduler scheduler;
   
-  int first_message = 1;
+  int first_message = 0;
   int worker_num = 0;
   //profile
   long split_time = 0;
@@ -79,37 +79,28 @@ class ReceiveMessage implements Runnable {
       @Override
       public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
         String message = new String(body, "UTF-8");
+        //System.out.println("receive message " + message);
         //long split_time_start = System.currentTimeMillis();
         //count = count + 1;
         //System.out.println(count);
         String [] message_split = message.split(";");
-        logger.log("[Scheduler] Received message");
+        logger.log("[Scheduler] Received message ");
         try{
           if (first_message == 1){
             scheduler_message_queue.pushToQueue(message_split[0]);
-            first_message = 3;
+            first_message = 2;
           }
           else{ 
-            if (first_message == 2){
-              /* Split the outgoing vertices equally to workers */
-              String out_vertex = message.split(" ")[1];
-              String out_vertex_split[] = out_vertex.split(",");
-              int length = out_vertex_split.length;
-              int cut = length/worker_num;
-              int workerID = 1;
-              for(int i=0;i<length;i++){
-                synchronized(scheduler.worker_vertex_data){
-                  scheduler.worker_vertex_data[workerID][Integer.valueOf(out_vertex_split[i])] = 1;
-                }
-                if(i == (cut * workerID - 1) && workerID!=worker_num)
-                  workerID = workerID + 1;
-              }
-              first_message = 3;
-            }
             /* Split the message */      
             for (int i=0;i<message_split.length;i++){
+              if(message_split[i].equals(""))
+                break;
               //message_split[i] = 1 2,3,4, time algo
-              String single_message_split[] = message_split[i].split(" "); 
+              //message_split[i] = 1(task vertex) 20(new shortest weight) time algo NEW
+
+              scheduler_message_queue.pushToQueue(message_split[i]);
+
+              /*String single_message_split[] = message_split[i].split(" "); 
               String out_vertex = single_message_split[1]; //2,3,4
               String out_vertex_split[] = out_vertex.split(",");
               for (int j=0;j<out_vertex_split.length;j++){
@@ -117,7 +108,7 @@ class ReceiveMessage implements Runnable {
                 //message_task = 1 2, time algo
                 scheduler_message_queue.pushToQueue(message_task);
                 //System.out.println("Push " + message_task);
-              }
+              }*/
             }
             
           }
@@ -154,12 +145,13 @@ class MyTask implements Runnable {
   @Override
   public void run(){ 
     String info_str = "";
-    while(true){
+    while(true){ 
       /* Get message from message queue */
-      String message = scheduler_message_queue.popFromQueue(); // src des, time for split task version
+      String message = scheduler_message_queue.popFromQueue(); // des weight for new message version
 
       /* Got message */
       if (!message.equals("NULL")){
+        //System.out.println("get message " + message);
         if(scheduler.first_message!=1){
           /* Decide which worker ID to assign task according to scheduler policy */
           info_str = SchedulerPolicy(message);
@@ -177,7 +169,7 @@ class MyTask implements Runnable {
   private String SchedulerPolicy(String message){
     //info_str = workerID 1/0 (has data, don't need subgraph, otherwise 0)
     String info_str = "";
-    int vertex = Integer.valueOf(message.split(" ")[1].split(",")[0]); //The task vertex
+    int vertex = Integer.valueOf(message.split(" ")[0]); //The task vertex
     
     //Start from worker_has_data[0], record that which worker has data, 
     //ex: worker_has_data[0]=2(worker2), worker_has_data[1]=4(worker4)
@@ -334,9 +326,12 @@ class SchedulerSendToWorker implements Runnable{
     int workerID;
     String worker_has_data;
     int length;
-    int first_message = 1;
+    int first_message = 0;
     //profile
-    //int count = 0;
+    int count_batch = 0;
+    int count_delay = 0;
+    int subgraph_batch = 0;
+    int subgraph_delay = 0;
     while(true){
       /* Get message from message queue */
       String message = scheduler_message_queue_worker.popFromQueue();
@@ -360,12 +355,18 @@ class SchedulerSendToWorker implements Runnable{
         if(batch_counter_worker[workerID] >= batch_size || first_message == 1){
           try{
             /* Check if it needs to send subgraph request to graph tracker */
-            if(message_batch_tracker[workerID].length()>0) 
+            if(message_batch_tracker[workerID].length()>0){ 
               sendSubgraphRequest(message_batch_tracker[workerID],workerID,logger,channel_tracker);//Send subgraph request to graph tracker
+              //logger.log(" batch send " + message_batch_tracker[workerID]);
+              //logger.log("batch subgraph count " + subgraph_batch);
+            }
             sendWork(message_batch_worker[workerID],workerID,logger,readconf, channel_worker); //Send task to worker 
-            //count = count + 1;
-            //System.out.println("send " + count);
-            //System.out.println("batch send " + message_batch_worker[workerID]);
+            //profile
+            //logger.log(" batch send " + message_batch_worker[workerID]);
+            //count_batch = count_batch + 1;
+            //logger.log("batch send count " + count_batch + " message size " + message_batch_worker[workerID].getBytes("UTF-8").length );
+            
+
           }catch(Exception e){}
           batch_counter_worker[workerID] = 0;
           message_batch_worker[workerID] = "";
@@ -381,12 +382,17 @@ class SchedulerSendToWorker implements Runnable{
             workerID = i;
             try{
               /* Check if it needs to send subgraph request to graph tracker */
-              if(message_batch_tracker[i].length()>0) 
+              if(message_batch_tracker[i].length()>0){
                 sendSubgraphRequest(message_batch_tracker[i],workerID,logger,channel_tracker);//Send subgraph request to graph tracker
+                //logger.log(" delay send " + message_batch_tracker[workerID]);
+                //logger.log("delay subgraph count " + subgraph_batch);
+              }
               sendWork(message_batch_worker[i],workerID,logger,readconf,channel_worker); //Send task to worker 
-              //count = count + 1;
-              //System.out.println("send " + count);
-              //System.out.println("delay send " + message_batch_worker[workerID]);
+              //profile
+              //logger.log(" delay send " + message_batch_worker[workerID]);
+              //count_delay = count_delay + 1;
+              //logger.log("delay send count " + count_delay + " message size " + message_batch_worker[workerID].getBytes("UTF-8").length);
+            
             }catch(Exception e){}
             batch_counter_worker[i] = 0;
             message_batch_worker[i] = "";
